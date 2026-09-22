@@ -21,9 +21,10 @@ EASE_START  = "2024-07"
 
 MA_WINDOW = 60            # months, reference rate for the moving-average models
 
-# Naive benchmark: deposit rate moves a fixed fraction of the change in 3M Euribor.
-# A round number, not estimated. The point is to have something the models must beat.
-NAIVE_BETA = 0.3
+# Naive benchmark: the deposit rate moves a fixed fraction of the change in 3M Euribor.
+# No single fraction can be picked without looking at the test period, so the benchmark
+# runs across this grid and the result is read as a range of betas, never one number.
+NAIVE_BETAS = [round(0.10 + 0.05 * i, 2) for i in range(13)]   # 0.10 to 0.70
 
 # ALM translation: stylised savings book, constant balance, same size for both countries
 BALANCE_EUR = 100e9

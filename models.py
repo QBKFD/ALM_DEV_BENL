@@ -30,13 +30,15 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Callable
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from scipy.optimize import curve_fit
 from statsmodels.tsa.stattools import adfuller, coint
 
-from config import EASE_START, HIKE_END, MA_WINDOW, NAIVE_BETA, RESULTS_DIR, TEST_START
+from config import (EASE_START, FIG_DIR, HIKE_END, MA_WINDOW, NAIVE_BETAS, RESULTS_DIR,
+                    TEST_START)
 from loader import get_sample
 
 HAC_LAGS = 12   # Newey-West lags for monthly data
@@ -240,10 +242,14 @@ def naive_no_change(history: pd.DataFrame, start: str) -> pd.Series:
     return pd.Series(d0, index=m.index[1:], name=NAIVE_NO_CHANGE)
 
 
-def naive_fixed_beta(history: pd.DataFrame, start: str, beta: float = NAIVE_BETA) -> pd.Series:
+def naive_fixed_beta(history: pd.DataFrame, start: str, beta: float) -> pd.Series:
     """The deposit rate moves a fixed fraction beta of the market rate change since t0.
 
     A flat pass-through assumption, with no dynamics and no estimation.
+
+    beta has no default on purpose. Any single value would have to be chosen with
+    knowledge of the test period, which is look-ahead bias and flatters the
+    benchmark. Callers run the NAIVE_BETAS grid and read the result as a range.
     """
     d0, m = _anchor(history, start)
     return pd.Series(d0 + beta * (m.to_numpy(float)[1:] - float(m.iloc[0])),
@@ -347,14 +353,82 @@ def run_benchmarks(data: pd.DataFrame) -> tuple[list[dict], dict]:
     for s_label, country in BENCHMARK_SAMPLES:
         test = get_sample(data, country, window="test")
         history = pd.concat([get_sample(data, country, window="full"), test])
-        for m_label, naive in [(NAIVE_NO_CHANGE, naive_no_change),
-                               (NAIVE_FIXED_BETA, naive_fixed_beta)]:
-            pred = naive(history, TEST_START)
-            rows.append({"sample": s_label, "model": m_label,
-                         **_error_cols(pred, test["d"])})
-            forecasts[(s_label, m_label)] = pd.DataFrame({"actual": test["d"], "predicted": pred})
+        pred = naive_no_change(history, TEST_START)
+        rows.append({"sample": s_label, "model": NAIVE_NO_CHANGE,
+                     **_error_cols(pred, test["d"])})
+        forecasts[(s_label, NAIVE_NO_CHANGE)] = pd.DataFrame({"actual": test["d"],
+                                                              "predicted": pred})
     return rows, forecasts
 
+
+# ---------------------------------------------------------------- benchmark grid
+
+def distinct_specs(results: pd.DataFrame, country: str) -> pd.DataFrame:
+    """Estimated model rows for one country, with duplicates and benchmarks removed.
+
+    The level-dependent model converges back onto the linear fit in several samples
+    and reproduces it to three decimals, so its rows are copies of the linear rows.
+    Counting both would double count one specification, so it is dropped here and
+    every count of "models beating the benchmark" uses this function.
+    """
+    keep = results[results["sample"].str.startswith(country)]
+    keep = keep[~keep["model"].isin(BENCHMARK_MODELS) & (keep["model"] != "level-dependent")]
+    return keep[keep["rmse"].notna()]
+
+
+def benchmark_grid(data: pd.DataFrame, results: pd.DataFrame) -> pd.DataFrame:
+    """Score the fixed beta benchmark across NAIVE_BETAS, per country.
+
+    One row per country per beta, with the number of distinct estimated
+    specifications that beat it, overall and in each phase.
+    """
+    rows = []
+    for s_label, country in BENCHMARK_SAMPLES:
+        code = s_label.split()[0]
+        specs = distinct_specs(results, code)
+        test = get_sample(data, country, window="test")
+        history = pd.concat([get_sample(data, country, window="full"), test])
+        for beta in NAIVE_BETAS:
+            err = _error_cols(naive_fixed_beta(history, TEST_START, beta), test["d"])
+            rows.append({
+                "country": code,
+                "beta": beta,
+                **err,
+                "n_specs": len(specs),
+                "n_beating": int((specs["rmse"] < err["rmse"]).sum()),
+                "n_beating_up": int((specs["rmse_up"] < err["rmse_up"]).sum()),
+                "n_beating_down": int((specs["rmse_down"] < err["rmse_down"]).sum()),
+            })
+    return pd.DataFrame(rows)[GRID_COLS]
+
+
+def plot_benchmark_grid(grid: pd.DataFrame, results: pd.DataFrame, out_path) -> None:
+    """Benchmark RMSE against the assumed beta, with the estimated models for reference."""
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for color, (s_label, _) in zip(["C0", "C1"], BENCHMARK_SAMPLES):
+        code = s_label.split()[0]
+        g = grid[grid["country"] == code]
+        ax.plot(g["beta"], g["rmse"], color=color, lw=1.8, marker="o", ms=3.5,
+                label=f"{code} naive fixed beta")
+        rmse = distinct_specs(results, code)["rmse"]
+        # reference lines go in the legend: NL and BE best sit almost on top of each other
+        ax.axhline(rmse.median(), color=color, ls=":", lw=1.2,
+                   label=f"{code} median estimated model ({rmse.median():.3f})")
+        ax.axhline(rmse.min(), color=color, ls="--", lw=1.2,
+                   label=f"{code} best estimated model ({rmse.min():.3f})")
+
+    ax.set_xlabel("Assumed fixed pass-through beta")
+    ax.set_ylabel("RMSE, percentage points")
+    ax.set_title("Naive fixed beta benchmark against the estimated models, "
+                 f"{TEST_START} onward")
+    ax.set_xlim(NAIVE_BETAS[0] - 0.02, NAIVE_BETAS[-1] + 0.02)
+    ax.legend(frameon=False, fontsize=8, loc="upper center", ncol=2)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+
+
+GRID_COLS = ["country", "beta", "rmse", "rmse_up", "rmse_down", "bias", "bias_up",
+             "bias_down", "n_specs", "n_beating", "n_beating_up", "n_beating_down"]
 
 ESTIMATION_COLS = ["sample", "model", "n", "pt@0%", "pt@4%", "g_above", "g_below", "asym_p", "coint_p"]
 FORECAST_COLS = ["sample", "model", "rmse", "bias", "rmse_up", "bias_up", "rmse_down", "bias_down"]
@@ -381,6 +455,17 @@ if __name__ == "__main__":
     print("\nOUT-OF-SAMPLE, from", TEST_START, "(error = predicted - actual, percentage points)")
     print(table[FORECAST_COLS].to_string(index=False))
 
+    grid = benchmark_grid(load_data(), table)
+    print("\nNAIVE FIXED BETA GRID (no beta is chosen; read the range)")
+    print("n_beating = distinct estimated specifications with a lower RMSE,"
+          " level-dependent excluded")
+    print(grid.to_string(index=False))
+
     RESULTS_DIR.mkdir(exist_ok=True)
+    FIG_DIR.mkdir(exist_ok=True)
     table.to_csv(RESULTS_DIR / "model_results.csv", index=False)
+    grid.to_csv(RESULTS_DIR / "benchmark_grid.csv", index=False)
+    plot_benchmark_grid(grid, table, FIG_DIR / "fig_benchmark_grid.png")
     print(f"\nSaved {RESULTS_DIR / 'model_results.csv'}")
+    print(f"Saved {RESULTS_DIR / 'benchmark_grid.csv'}")
+    print(f"Saved {FIG_DIR / 'fig_benchmark_grid.png'}")

@@ -79,8 +79,22 @@ Neither is estimated on anything, so there is one of each per country rather tha
 one per sample.
 
 - **naive no-change**: the deposit rate never moves from its 2021-12 level.
-- **naive fixed beta**: the deposit rate moves 0.3 of the change in 3M Euribor
-  since 2021-12. `NAIVE_BETA` is set in `config.py`.
+- **naive fixed beta**: the deposit rate moves a fixed fraction of the change in 3M
+  Euribor since 2021-12, with no dynamics.
+
+The fixed beta benchmark is run across a grid rather than at one value. Any single
+beta would have to be chosen, and I could only choose it by looking at what
+pass-through turned out to be after 2022. That is look-ahead bias, and it would
+flatter the benchmark. So `config.py` holds `NAIVE_BETAS`, 0.10 to 0.70 in steps of
+0.05, `naive_fixed_beta` has no default beta, and the result is read as a range.
+
+### Counting models that beat a benchmark
+
+All such counts use distinct specifications only. The level-dependent model
+converges back onto the linear fit in three of the five samples and reproduces it
+to three decimals, so counting both would count one specification twice. Every
+count below drops the level-dependent rows, which leaves 12 specifications for NL
+and 8 for BE.
 
 ### NII translation
 
@@ -94,8 +108,7 @@ in above plan.
 
 Error is predicted minus actual, in percentage points. Positive bias means the
 model predicted a higher savings rate than banks actually paid. `beta` is the
-long-run pass-through at a 0% market rate. For the naive fixed beta benchmark it is
-assumed, not estimated. `Coint p` is the Engle-Granger p-value, and for the
+long-run pass-through at a 0% market rate. `Coint p` is the Engle-Granger p-value, and for the
 level-dependent model it is an ADF p-value on the residuals of a nonlinear first
 step, so it is indicative only.
 
@@ -127,18 +140,18 @@ step, so it is indicative only.
 | BE full | asymmetric | 0.37 | 0.22 | 0.421 | +0.390 | 0.429 | 0.412 | +1,787 |
 | BE full | asymmetric MA60 | 0.46 | 0.39 | 0.303 | +0.131 | 0.084 | 0.440 | +600 |
 | NL benchmark | naive no-change |  |  | 1.232 | -1.065 | 1.028 | 1.440 | -4,882 |
-| NL benchmark | naive fixed beta | 0.30 |  | 0.437 | -0.184 | 0.339 | 0.531 | -842 |
 | BE benchmark | naive no-change |  |  | 0.608 | -0.515 | 0.458 | 0.748 | -2,362 |
-| BE benchmark | naive fixed beta | 0.30 |  | 0.466 | +0.366 | 0.605 | 0.197 | +1,679 |
 
-Full output is in `results/model_results.csv` and `results/nii_surprise.csv`.
+Full output is in `results/model_results.csv` and `results/nii_surprise.csv`. The
+fixed beta grid has its own table, `results/benchmark_grid.csv`, further down.
 Charts are in `figures/`.
 
 ### What the table shows
 
-Cointegration is never rejected at 5%. Across the 20 linear-family rows, where the
-Engle-Granger test is the right one, the lowest p-value is 0.054. On its own terms
-the specification does not hold on this data, in any sample, for either country. I
+The Engle-Granger test never finds cointegration at 5% (lowest p-value 0.054).
+That is across the 20 linear-family rows, where the test is the right one. The null
+is no cointegration, and it is never rejected, so on its own terms the
+specification does not hold on this data, in any sample, for either country. I
 report the models anyway, because that is the specification banks use.
 
 The training window matters more than the functional form. For NL, moving from the
@@ -166,43 +179,76 @@ is worth looking at next to it.
 
 ## How the models compare with the naive benchmarks
 
-The naive no-change benchmark is beaten by every one of the 15 NL model rows and by
-9 of the 10 BE rows. Assuming savings rates never move at all is worse than any
-model here, which is the least I would want to see.
+### No-change
 
-The naive fixed beta benchmark is a much harder target, and the models do not
-clearly clear it. For NL it scores 0.437 RMSE, and only 4 of the 15 NL model rows
-beat it. For BE it scores 0.466, and 7 of the 10 BE rows beat it. A flat 0.3
-pass-through with no dynamics and no estimation sits in the middle of the model
-field in both countries. The models are not without value: the best of them, `NL
-full linear` at 0.265 and `BE pre-ZLB linear MA60` at 0.274, are clearly better.
-But you only get that by choosing the right sample, and you could not have known
-which one that was in 2021.
+Every distinct specification beats it, 12 of 12 in NL and 8 of 8 in BE. Assuming
+savings rates never move at all is worse than any model here. That is the low bar,
+and the models clear it.
 
-Splitting by phase makes it worse in one place. In the easing phase from July 2024,
-the BE naive fixed beta benchmark scores 0.197 RMSE, and not one of the 10 BE model
-rows beats it. The best BE model in that phase is 0.323. Every BE model overpredicts
-the savings rate as rates come down. The adjustment speed that applies when the
-deposit rate sits above equilibrium runs between -0.03 and -0.13 per month across
-the BE rows, so the models hold the deposit rate up while the actual rate fell
-faster. A rule that just tracks 0.3 of the market move
-has no such inertia and does better.
+### Fixed beta, across the grid
 
-The benchmark does not win everywhere. In the BE hiking phase it is poor, at 0.605
-against 0.083 for the best model, because it passes through far too much too
-quickly while BE banks barely moved. For NL it loses on RMSE to the better samples
-but its NII total of EUR -842m is smaller in absolute terms than 11 of the 15 NL
-model rows.
+`results/benchmark_grid.csv` has the full table and
+`figures/fig_benchmark_grid.png` plots it. Both curves are U-shaped, NL bottoming
+at beta 0.35 and BE at 0.15.
 
-My reading is that the models earn their place through the hiking phase and lose it
-through the easing phase, and that any claim they beat a naive rule rests on
-picking the sample after the fact.
+| Country | Benchmark's own best | Best model | Median model | Betas beating the median model |
+|---|---|---|---|---|
+| NL | 0.389 at beta 0.35 | 0.265 | 0.567 | 0.25 to 0.45 (5 of 13) |
+| BE | 0.243 at beta 0.15 | 0.274 | 0.370 | 0.10 to 0.25 (4 of 13) |
+
+The two countries give different answers, so I do not summarise them together.
+
+**NL: only the best models clear the benchmark, not the field.** No beta in the
+grid beats the best NL model: at its own optimum of 0.35 the benchmark scores
+0.389, against 0.265 for `NL full linear`. Most NL specifications do not clear it.
+Across the competitive band, betas 0.25 to 0.45, only 2 to 4 of the 12 NL
+specifications beat the benchmark, so 8 to 10 of them lose to it. A fixed beta
+anywhere in that band also beats the median NL model at 0.567. The top of the NL
+field is worth more than a rule of thumb. The middle of it is not.
+
+**BE: the models are beaten outright.** At beta 0.15 the benchmark scores 0.243,
+better than the best BE specification at 0.274. At beta 0.15 and 0.20 no estimated
+BE specification beats it on RMSE at all. A one-number rule with no dynamics
+forecast Belgian savings rates better than every model I fitted.
+
+There is one qualification on the BE result, and it matters. Every beta I could
+have estimated from pre-2022 BE data runs from 0.24 to 0.52. The winning range,
+0.15 to 0.20, sits below all of it. So a rule better than every BE model existed,
+but nothing in the pre-2022 data pointed at it. Reading 0.15 off the grid is only
+possible because I can see the answer.
+
+### Using each sample's own beta
+
+The grid still leaves the choice of beta open. The test that closes it is to give
+the naive rule the beta that sample itself estimated, which uses no post-2021
+information, and compare it against that sample's own four specifications.
+
+| Sample | Its estimated beta | Naive RMSE at that beta | Its four specifications | Result |
+|---|---|---|---|---|
+| NL pre-ZLB | 0.29 | 0.437 | 0.441, 0.505, 0.852, 0.934 | naive beats all four |
+| NL full | 0.57 | 0.717 | 0.265, 0.553, 0.565, 0.568 | models beat it, 4 of 4 |
+| NL matched | 0.53 | 0.717 | 0.371, 0.580, 0.580, 0.819 | models beat it, 3 of 4 |
+| BE pre-ZLB | 0.24 | 0.335 | 0.274, 0.326, 0.534, 0.586 | models beat it, 2 of 4 |
+| BE full | 0.37 | 0.611 | 0.295, 0.303, 0.413, 0.421 | models beat it, 4 of 4 |
+
+In four of the five samples the estimated models beat a naive rule built from their
+own pass-through. The exception is NL trained to 2013, where the naive rule at
+0.437 beats all four specifications and the closest of them, MA60, loses by 0.004.
+
+My reading is that the error correction machinery earns its place, but narrowly,
+and only once it is estimated on data that includes the ZLB years. The NL pre-ZLB
+sample is the clearest failure: everything it learned from 2000 to 2013 was worth
+less than its own single pass-through number applied as a straight line. Against
+that, the BE result shows a better rule existed that no amount of careful
+estimation on pre-2022 data would have found.
 
 ## Limitations
 
 The test covers one rate cycle, so every conclusion is one observation. The phase
 split at June 2024 was chosen after seeing the forecasts, which means the phase
-split results are descriptive, not a test. The NII figures use a constant EUR 100bn
+split results are descriptive, not a test. The fixed beta grid runs from 0.10 to
+0.70, which is itself a choice, though it is a wide one and both curves turn well
+inside it. The NII figures use a constant EUR 100bn
 book and no volume model, so they scale a pricing error and nothing else. A real
 deposit model pairs this with a model of how much balance stays and for how long.
 Savings rates here are the ECB MIR outstanding-amounts rate, which is an average
@@ -214,7 +260,7 @@ have no way to see.
 ```
 uv sync
 uv run pytest
-uv run python models.py         # estimation and out-of-sample tables, writes results/
+uv run python models.py         # estimation, out-of-sample and benchmark grid tables
 uv run python alm.py            # NII surprise and implied hedge, writes results/ and figures/
 uv run python plots.py          # rate history chart
 uv run python forecast_plot.py  # actual against forecast paths
@@ -229,10 +275,10 @@ Tests run on simulated data with known parameters, so they do not need `data/raw
 
 | File | What it does |
 |---|---|
-| `config.py` | paths, sample windows, `NAIVE_BETA`, book size. Nothing is hardcoded elsewhere |
+| `config.py` | paths, sample windows, `NAIVE_BETAS`, book size. Nothing is hardcoded elsewhere |
 | `data_pull.py` | fetches the ECB series into `data/raw.csv` |
 | `loader.py` | loads the panel, builds the moving average, cuts clean samples |
-| `models.py` | the ECM family, the naive benchmarks, and the out-of-sample run |
+| `models.py` | the ECM family, the naive benchmarks, the fixed beta grid, and the out-of-sample run |
 | `alm.py` | NII surprise and implied hedge |
 | `plots.py`, `forecast_plot.py` | charts |
 | `tests/test_models.py` | tests on simulated data |

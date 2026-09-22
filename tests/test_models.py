@@ -5,10 +5,11 @@ import pandas as pd
 import pytest
 
 from alm import implied_hedge, nii_surprise
-from config import NAIVE_BETA
+from config import NAIVE_BETAS
 from loader import get_sample
-from models import (ECMResult, fit_asymmetric_ecm, fit_linear_ecm, forecast_oos,
-                    forecast_path, naive_fixed_beta, naive_no_change)
+from models import (ECMResult, benchmark_grid, distinct_specs, fit_asymmetric_ecm,
+                    fit_linear_ecm, forecast_oos, forecast_path, naive_fixed_beta,
+                    naive_no_change)
 
 
 def simulate(n=500, theta0=0.5, theta1=0.4, b=0.05, g_above=-0.1, g_below=-0.1, seed=0):
@@ -114,10 +115,17 @@ def test_naive_fixed_beta_passes_through_the_market_move():
     pd.testing.assert_series_equal(pred, expected, check_names=False)
 
 
-def test_naive_fixed_beta_defaults_to_the_configured_beta():
+def test_naive_fixed_beta_requires_an_explicit_beta():
+    """No default, so no single beta can be picked by looking at the test period."""
     data, start = naive_setup()
-    pd.testing.assert_series_equal(naive_fixed_beta(data, start),
-                                   naive_fixed_beta(data, start, beta=NAIVE_BETA))
+    with pytest.raises(TypeError):
+        naive_fixed_beta(data, start)
+
+
+def test_naive_betas_grid_spans_the_documented_range():
+    assert NAIVE_BETAS[0] == 0.10 and NAIVE_BETAS[-1] == 0.70
+    steps = {round(b - a, 2) for a, b in zip(NAIVE_BETAS, NAIVE_BETAS[1:])}
+    assert steps == {0.05}
 
 
 def test_naive_fixed_beta_with_zero_beta_is_no_change():
@@ -128,11 +136,11 @@ def test_naive_fixed_beta_with_zero_beta_is_no_change():
 
 def test_naive_benchmarks_use_no_realised_deposit_rates():
     data, start = naive_setup()
-    base = naive_no_change(data, start), naive_fixed_beta(data, start)
+    base = naive_no_change(data, start), naive_fixed_beta(data, start, 0.3)
 
     data.loc[data.index[SPLIT]:, "d"] += 5.0   # change every realised d in the test window
     assert naive_no_change(data, start).equals(base[0])
-    assert naive_fixed_beta(data, start).equals(base[1])
+    assert naive_fixed_beta(data, start, 0.3).equals(base[1])
 
 
 def test_naive_benchmarks_need_no_estimation_window():
@@ -140,7 +148,73 @@ def test_naive_benchmarks_need_no_estimation_window():
     data, start = naive_setup()
     short = data.iloc[SPLIT - 1:]
     pd.testing.assert_series_equal(naive_no_change(short, start), naive_no_change(data, start))
-    pd.testing.assert_series_equal(naive_fixed_beta(short, start), naive_fixed_beta(data, start))
+    pd.testing.assert_series_equal(naive_fixed_beta(short, start, 0.3),
+                                   naive_fixed_beta(data, start, 0.3))
+
+
+# ---------------------------------------------------------------- benchmark grid
+
+def fake_panel(seed=3):
+    """A panel shaped like data/raw.csv, so the country-level runners can be tested."""
+    idx = pd.period_range("2000-01", "2026-07", freq="M")
+    rng = np.random.default_rng(seed)
+    m = 2.0 + np.cumsum(rng.normal(0, 0.1, len(idx)))
+    out = pd.DataFrame({"euribor3m": m}, index=idx)
+    for c in ["nl", "be"]:
+        out[f"{c}_savings"] = 0.5 + 0.4 * m + rng.normal(0, 0.05, len(idx))
+    return out
+
+
+def fake_results():
+    """Two NL specifications plus a level-dependent copy of the first, and one BE."""
+    def row(sample, model, rmse):
+        return {"sample": sample, "model": model, "rmse": rmse,
+                "rmse_up": rmse, "rmse_down": rmse}
+    return pd.DataFrame([
+        row("NL full", "linear", 0.10),
+        row("NL full", "level-dependent", 0.10),   # a copy of the linear row
+        row("NL full", "asymmetric", 9.00),
+        row("NL benchmark", "naive no-change", 0.01),
+        row("BE full", "linear", 9.00),
+    ])
+
+
+def test_distinct_specs_drops_level_dependent_and_benchmarks():
+    specs = distinct_specs(fake_results(), "NL")
+    assert list(specs["model"]) == ["linear", "asymmetric"]
+
+
+def test_distinct_specs_drops_failed_fits():
+    results = fake_results()
+    results.loc[len(results)] = {"sample": "NL full", "model": "linear MA60", "rmse": np.nan,
+                                 "rmse_up": np.nan, "rmse_down": np.nan}
+    assert len(distinct_specs(results, "NL")) == 2
+
+
+def test_benchmark_grid_covers_every_country_and_beta():
+    grid = benchmark_grid(fake_panel(), fake_results())
+    assert len(grid) == 2 * len(NAIVE_BETAS)
+    assert sorted(grid["country"].unique()) == ["BE", "NL"]
+    for country in ["NL", "BE"]:
+        assert list(grid[grid["country"] == country]["beta"]) == list(NAIVE_BETAS)
+
+
+def test_benchmark_grid_counts_distinct_specs_only():
+    """The level-dependent copy must not inflate either the count or the total."""
+    grid = benchmark_grid(fake_panel(), fake_results())
+    nl = grid[grid["country"] == "NL"]
+    assert (nl["n_specs"] == 2).all()          # linear and asymmetric, not the copy
+    assert nl["n_beating"].max() <= 1          # only the 0.10 RMSE row can ever beat it
+    be = grid[grid["country"] == "BE"]
+    assert (be["n_specs"] == 1).all()
+    assert (be["n_beating"] == 0).all()        # the single BE spec is worse at every beta
+
+
+def test_benchmark_grid_recovers_the_true_beta():
+    """The simulated panel passes through 0.4, so the grid should be best near 0.4."""
+    grid = benchmark_grid(fake_panel(), fake_results())
+    nl = grid[grid["country"] == "NL"]
+    assert nl.loc[nl["rmse"].idxmin(), "beta"] == pytest.approx(0.4, abs=0.05)
 
 
 # ---------------------------------------------------------------- data and ALM
